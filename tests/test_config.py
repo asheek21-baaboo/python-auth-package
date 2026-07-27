@@ -56,3 +56,40 @@ def test_local_fallback_uses_sso_local_base_url() -> None:
         environment="local",
     )
     assert s.base_url == "https://custom-sso.test"
+
+
+def test_should_verify_ssl_defaults_false_in_local() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url="https://baaboo-sso.test",
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="local",
+    )
+    assert s.should_verify_ssl is False
+
+
+def test_should_verify_ssl_defaults_true_in_production() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url="https://sso.example.com",
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="production",
+    )
+    assert s.should_verify_ssl is True
+
+
+def test_should_verify_ssl_explicit_override_wins() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url="https://sso.example.com",
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="local",
+        verify_ssl=True,
+    )
+    assert s.should_verify_ssl is True

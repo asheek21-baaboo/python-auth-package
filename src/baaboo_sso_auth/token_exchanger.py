@@ -65,7 +65,9 @@ class TokenExchanger:
             "project_id": self._settings.project_id,
         }
 
-        client = self._http_client or httpx.Client(timeout=10.0)
+        client = self._http_client or httpx.Client(
+            timeout=10.0, verify=self._settings.should_verify_ssl
+        )
         owns_client = self._http_client is None
         try:
             response = client.post(

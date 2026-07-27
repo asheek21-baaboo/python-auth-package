@@ -41,6 +41,7 @@ class SsoSettings(BaseSettings):
     redirect_after_login: str = Field(default="/", validation_alias="SSO_REDIRECT_AFTER_LOGIN")
     redirect_to_idp_logout: bool = Field(default=True, validation_alias="SSO_REDIRECT_TO_IDP_LOGOUT")
     cookie_secure: bool | None = Field(default=None, validation_alias="SSO_COOKIE_SECURE")
+    verify_ssl: bool | None = Field(default=None, validation_alias="SSO_VERIFY_SSL")
     jwks_cache_ttl: int = Field(default=JWKS_CACHE_TTL_SECONDS, validation_alias="SSO_JWKS_CACHE_TTL")
     jwks_path: str = Field(default=JWKS_PATH, validation_alias="SSO_JWKS_PATH")
     heartbeat_interval_seconds: int = Field(
@@ -89,6 +90,20 @@ class SsoSettings(BaseSettings):
     def cookie_should_be_secure(self) -> bool:
         if self.cookie_secure is not None:
             return self.cookie_secure
+        return self.environment.lower() != "local"
+
+    @property
+    def should_verify_ssl(self) -> bool:
+        """
+        Whether outgoing HTTPS calls to the IdP should verify the TLS certificate.
+
+        Defaults to ``False`` for ``APP_ENV=local`` (local dev stacks such as
+        EnvKit/Laragon/mkcert provision self-signed certs for ``*.test`` hosts
+        like ``https://baaboo-sso.test``), and ``True`` everywhere else.
+        Override explicitly with ``SSO_VERIFY_SSL=true|false``.
+        """
+        if self.verify_ssl is not None:
+            return self.verify_ssl
         return self.environment.lower() != "local"
 
 

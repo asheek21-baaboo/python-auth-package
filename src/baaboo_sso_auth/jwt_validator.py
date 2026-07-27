@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ssl
 import threading
 import time
 from typing import Any
@@ -119,12 +120,28 @@ class JwtValidator:
                 cache_keys=True,
                 lifespan=ttl,
                 headers={"Accept": "application/json"},
+                ssl_context=self._jwk_ssl_context(),
             )
             self._cached_at = now
             return self._jwk_client
 
+    def _jwk_ssl_context(self) -> ssl.SSLContext | None:
+        """
+        PyJWKClient fetches JWKS via ``urllib`` internally, independent of
+        ``_http_client`` — it needs its own SSL context to honor the same
+        ``should_verify_ssl`` setting (e.g. for local self-signed dev certs).
+        """
+        if self._settings.should_verify_ssl:
+            return None
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+
     def _fetch_jwks(self) -> dict[str, Any]:
-        client = self._http_client or httpx.Client(timeout=5.0)
+        client = self._http_client or httpx.Client(
+            timeout=5.0, verify=self._settings.should_verify_ssl
+        )
         owns_client = self._http_client is None
         try:
             response = client.get(self.jwks_url, headers={"Accept": "application/json"})

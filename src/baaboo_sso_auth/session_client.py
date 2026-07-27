@@ -53,7 +53,9 @@ class IdpSessionClient:
         self._post_bearer(self.session_end_url, token, best_effort=True)
 
     def _post_bearer(self, url: str, token: str, *, best_effort: bool) -> bool:
-        client = self._http_client or httpx.Client(timeout=10.0)
+        client = self._http_client or httpx.Client(
+            timeout=10.0, verify=self._settings.should_verify_ssl
+        )
         owns_client = self._http_client is None
         try:
             response = client.post(
