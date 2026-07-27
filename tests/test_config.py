@@ -22,10 +22,37 @@ def test_idp_url_alias() -> None:
     get_settings.cache_clear()
     s = SsoSettings(  # type: ignore[call-arg]
         sso_base_url=None,
-        idp_url="http://baaboo-sso.test",
+        idp_url="https://baaboo-sso.test",
         project_id="my-app",
         client_secret="sec",
         app_url="https://app.test",
         environment="local",
     )
-    assert s.base_url == "http://baaboo-sso.test"
+    assert s.base_url == "https://baaboo-sso.test"
+
+
+def test_local_fallback_default_https() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url=None,
+        idp_url=None,
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="local",
+    )
+    assert s.base_url == "https://baaboo-sso.test"
+
+
+def test_local_fallback_uses_sso_local_base_url() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url=None,
+        idp_url=None,
+        sso_local_base_url="https://custom-sso.test",
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="local",
+    )
+    assert s.base_url == "https://custom-sso.test"

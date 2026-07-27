@@ -33,6 +33,7 @@ class SsoSettings(BaseSettings):
 
     sso_base_url: str | None = Field(default=None, validation_alias="SSO_BASE_URL")
     idp_url: str | None = Field(default=None, validation_alias="IDP_URL")
+    sso_local_base_url: str | None = Field(default=None, validation_alias="SSO_LOCAL_BASE_URL")
     project_id: str = Field(validation_alias="SSO_PROJECT_ID")
     client_id: str | None = Field(default=None, validation_alias="SSO_CLIENT_ID")
     client_secret: str = Field(validation_alias="SSO_CLIENT_SECRET")
@@ -48,7 +49,7 @@ class SsoSettings(BaseSettings):
     )
     environment: str = Field(default="production", validation_alias="APP_ENV")
 
-    @field_validator("sso_base_url", "idp_url", "app_url", mode="before")
+    @field_validator("sso_base_url", "idp_url", "sso_local_base_url", "app_url", mode="before")
     @classmethod
     def _strip_trailing_slash(cls, value: object) -> object:
         if isinstance(value, str):
@@ -70,7 +71,9 @@ class SsoSettings(BaseSettings):
             if candidate:
                 return candidate.rstrip("/")
         if self.environment.lower() == "local":
-            return "http://baaboo-sso.test"
+            if self.sso_local_base_url:
+                return self.sso_local_base_url.rstrip("/")
+            return "https://baaboo-sso.test"
         return DEFAULT_PRODUCTION_IDP_URL
 
     @property

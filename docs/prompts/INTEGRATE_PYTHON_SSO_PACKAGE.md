@@ -87,6 +87,34 @@ Rules:
 - Upgrading = bump the tag and reinstall (`pip install --force-reinstall` if the version number did not change).
 - If the repo is **private**, git auth is required at install time: SSH (`git+ssh://git@github.com/asheek21-baaboo/python-auth-package.git@v0.1.0`) for developer machines, or a fine-grained PAT with read-only contents scope for CI/servers (inject via env — never commit a token into a requirements file).
 
+#### Update the installed package version
+
+1. Replace the old release tag in the consuming app's `requirements.txt` or `pyproject.toml` (for example, change `@v0.1.0` to `@v0.2.0`).
+2. Reinstall from the updated dependency file:
+
+```bash
+# requirements.txt
+pip install --upgrade --no-cache-dir -r requirements.txt
+
+# pyproject.toml
+pip install --upgrade --no-cache-dir .
+```
+
+For a direct one-off update:
+
+```bash
+pip install --upgrade --no-cache-dir \
+  "baaboo-sso-auth[fastapi] @ git+https://github.com/asheek21-baaboo/python-auth-package.git@v0.2.0"
+```
+
+Verify that the expected version is installed:
+
+```bash
+python -c "from importlib.metadata import version; print(version('baaboo-sso-auth'))"
+```
+
+Commit the updated dependency file (and lock file, if the app uses one) so local, CI, and production environments install the same release.
+
 ---
 
 ### Phase 2 — Environment
