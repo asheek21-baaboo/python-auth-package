@@ -8,7 +8,7 @@ Wire a **Next.js frontend** to a **FastAPI (or Flask) backend that already uses 
 
 Open the **Next.js app** in Cursor, then paste:
 
-> Follow `docs/prompts/INTEGRATE_NEXTJS_FRONTEND.md` (from `baaboo-python-auth-package`) end to end. Interview me for the backend URL and deployment topology, wire the rewrites (or CORS setup), add the credentialed fetch wrapper with 401 → `/login` redirect, add the `/me` auth hook, and verify the full login round-trip against the backend.
+> Follow `docs/prompts/INTEGRATE_NEXTJS_FRONTEND.md` (from `baaboo-python-auth-package`) end to end. Before changing files, ask me to choose **Option A (Next.js proxy/rewrite)** or **Option B (separate same-site frontend and backend hosts)** and ask for the frontend/backend dev and production URLs. Wait for my answer, then implement only the selected topology. Add the credentialed fetch wrapper with 401 → `/login` redirect, add the `/me` auth hook, and verify the full login round-trip against the backend.
 
 ---
 
@@ -26,8 +26,9 @@ The JWT lives **only** in the httpOnly `token` cookie. The frontend never sees, 
 ### Before changing any file
 
 1. Read the backend's SSO setup (confirm `create_sso_router` / `create_sso_blueprint` is wired).
-2. Ask the human: **backend URL** (dev + prod), **frontend URL** (dev + prod), and which topology below applies.
-3. Inspect the Next.js app: existing auth code, token storage, `Authorization` headers, login pages — these will be **removed**.
+2. Ask the human the topology question in Phase 1 and **wait for an answer**. Do not infer or silently choose a topology.
+3. Ask for the **backend URL** (dev + prod) and **frontend URL** (dev + prod).
+4. Inspect the Next.js app: existing auth code, token storage, `Authorization` headers, login pages — these will be **removed**.
 
 **Working directory:** the **Next.js app root**, not this package repo.
 
@@ -48,7 +49,23 @@ The JWT lives **only** in the httpOnly `token` cookie. The frontend never sees, 
 
 ### Phase 1 — Choose the topology
 
-The `token` cookie is `SameSite=Lax`, so browser and backend must be **same-site**. Pick one:
+The `token` cookie is `SameSite=Lax`, so browser and backend must be **same-site**.
+
+Before editing or installing anything, ask the human:
+
+> Which deployment topology should I implement?
+>
+> 1. **Option A — Next.js proxy/rewrite (recommended):** the browser uses only the Next.js origin, and Next.js proxies SSO and API requests to FastAPI.
+> 2. **Option B — Separate same-site hosts:** Next.js and FastAPI are public on separate hosts under the same registrable domain, requiring credentialed CORS.
+>
+> Also provide the frontend and backend URLs for development and production.
+
+Wait for the answer. Record the selected topology and URLs, then follow **only that option's** configuration and examples throughout this document:
+
+- **Option A:** configure rewrites and `BACKEND_URL`; keep `NEXT_PUBLIC_API_URL` unset; do not add CORS solely for this integration.
+- **Option B:** configure `NEXT_PUBLIC_API_URL` and backend credentialed CORS; do not add Next.js auth/API rewrites.
+- If the proposed production hosts are unrelated domains, explain that Option B is incompatible with the package's `SameSite=Lax` cookie and ask the human to choose Option A or change the domains.
+- Do not combine both options or leave both active as fallbacks.
 
 #### Option A — Proxy through Next.js rewrites (recommended)
 
@@ -82,6 +99,35 @@ IdP redirect URI registered = `{Next.js URL}/oauth/callback`.
 
 `BACKEND_URL` is a **server-only** env var (no `NEXT_PUBLIC_` prefix).
 
+**Worked example (Option A)** — tool called `reports`, Next.js at `https://reports.baaboo.com`, FastAPI reachable only from the Next.js server at `http://10.0.0.5:8000`:
+
+Frontend `.env` (Next.js — server-only):
+
+```env
+BACKEND_URL=http://10.0.0.5:8000        # dev: http://localhost:8000
+```
+
+Backend `.env` (FastAPI):
+
+```env
+SSO_BASE_URL=https://sso.baaboo.com
+SSO_PROJECT_ID=reports
+SSO_CLIENT_ID=reports
+SSO_CLIENT_SECRET=from-idp-registry
+APP_URL=https://reports.baaboo.com      # the FRONTEND URL — dev: http://localhost:3000
+SSO_REDIRECT_AFTER_LOGIN=/dashboard     # relative — same origin
+```
+
+IdP registry: redirect URI = `https://reports.baaboo.com/oauth/callback` (dev: `http://localhost:3000/oauth/callback`).
+
+Login round-trip as the browser sees it (one origin throughout):
+
+1. User opens `https://reports.baaboo.com/dashboard` → `/me` returns 401 → browser navigates to `https://reports.baaboo.com/login`
+2. Next.js proxies `/login` to FastAPI, which responds with a redirect to `https://sso.baaboo.com/oauth/authorize?...`
+3. User logs in at the IdP → IdP redirects to `https://reports.baaboo.com/oauth/callback?code=...`
+4. Next.js proxies the callback to FastAPI → FastAPI exchanges the code, sets the `token` cookie (which lands on `reports.baaboo.com`), redirects to `/dashboard`
+5. All further `/api/*` and `/me` fetches carry the cookie automatically; `NEXT_PUBLIC_API_URL` stays unset so `API_BASE` is `""`
+
 #### Option B — Separate same-site hosts (e.g. `app.example.com` + `api.example.com`)
 
 Same registrable domain counts as same-site, so the Lax cookie still flows — but CORS is required.
@@ -91,6 +137,49 @@ Same registrable domain counts as same-site, so the Lax cookie still flows — b
 - IdP redirect URI = `{backend URL}/oauth/callback`.
 - Frontend env: `NEXT_PUBLIC_API_URL=https://api.example.com`.
 - Dev works the same way: `localhost:3000` → `localhost:8000` is same-site (ports are ignored by SameSite).
+
+**Worked example (Option B)** — tool called `reports`, Next.js at `https://reports.baaboo.com`, FastAPI publicly at `https://reports-api.baaboo.com` (same registrable domain `baaboo.com` → same-site):
+
+Frontend `.env` (Next.js):
+
+```env
+NEXT_PUBLIC_API_URL=https://reports-api.baaboo.com   # dev: http://localhost:8000
+```
+
+Backend `.env` (FastAPI):
+
+```env
+SSO_BASE_URL=https://sso.baaboo.com
+SSO_PROJECT_ID=reports
+SSO_CLIENT_ID=reports
+SSO_CLIENT_SECRET=from-idp-registry
+APP_URL=https://reports-api.baaboo.com                    # the BACKEND URL — dev: http://localhost:8000
+SSO_REDIRECT_AFTER_LOGIN=https://reports.baaboo.com/dashboard  # absolute — different host; dev: http://localhost:3000/dashboard
+```
+
+Backend CORS (FastAPI):
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://reports.baaboo.com"],  # dev: "http://localhost:3000"
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+IdP registry: redirect URI = `https://reports-api.baaboo.com/oauth/callback` (dev: `http://localhost:8000/oauth/callback`).
+
+Login round-trip as the browser sees it (two hosts, one site):
+
+1. User opens `https://reports.baaboo.com/dashboard` → fetch to `https://reports-api.baaboo.com/me` returns 401 → browser navigates to `https://reports-api.baaboo.com/login`
+2. FastAPI redirects to `https://sso.baaboo.com/oauth/authorize?...`
+3. User logs in at the IdP → IdP redirects to `https://reports-api.baaboo.com/oauth/callback?code=...`
+4. FastAPI exchanges the code, sets the `token` cookie (which lands on `reports-api.baaboo.com`), redirects to `https://reports.baaboo.com/dashboard`
+5. Further fetches from the frontend to `reports-api.baaboo.com` carry the cookie because the hosts are same-site and every fetch uses `credentials: 'include'`
 
 **Not supported:** unrelated domains (e.g. `*.vercel.app` frontend + different backend domain). `SameSite=Lax` blocks the cookie cross-site. Use Option A instead.
 

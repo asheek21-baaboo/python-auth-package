@@ -8,7 +8,7 @@
 
 Open the **consuming Python app** in Cursor, then paste:
 
-> Follow `docs/prompts/INTEGRATE_PYTHON_SSO_PACKAGE.md` end to end. Interview me for install settings, install `baaboo-sso-auth`, copy the SSO `.env` keys, wire protected routes with `require_user` (FastAPI) or `require_auth` (Flask), and verify the login flow against the existing IdP.
+> Follow `docs/prompts/INTEGRATE_PYTHON_SSO_PACKAGE.md` end to end. Interview me for install settings — including whether a separate browser frontend (e.g. Next.js) sits in front of this backend, and if so which topology (proxy/rewrite vs separate same-site hosts). Install `baaboo-sso-auth`, copy the SSO `.env` keys, wire protected routes with `require_user` (FastAPI) or `require_auth` (Flask), and verify the login flow against the existing IdP.
 
 ---
 
@@ -30,6 +30,7 @@ The package **owns** JWT validation (via IdP JWKS), OAuth callback, login redire
 2. Confirm IdP contract: IdP `docs/ai-sso-auth-and-package-integration.md` (in `baaboo-sso`) if available.
 3. Inspect the consuming app: existing `/login`, `/logout`, `/oauth/callback`, session auth, JWT middleware.
 4. Ask the human for **`SSO_PROJECT_ID`**, **`SSO_CLIENT_SECRET`**, **`SSO_BASE_URL`**, and **`APP_URL`**. Do not invent secrets.
+5. Ask whether a **separate browser frontend** (e.g. Next.js) sits in front of this backend, and if so, which topology — this changes what `APP_URL` and `SSO_REDIRECT_AFTER_LOGIN` mean (see Phase 2). The frontend side is covered by `INTEGRATE_NEXTJS_FRONTEND.md` in this repo; both integrations must agree on the topology.
 
 **Working directory:** the **consuming app root**, not this package repo (unless editing the package itself).
 
@@ -52,12 +53,39 @@ The package **owns** JWT validation (via IdP JWKS), OAuth callback, login redire
 
 ### Phase 1 — Install
 
+The package is **not on PyPI** — it is installed directly from GitHub:
+[`asheek21-baaboo/python-auth-package`](https://github.com/asheek21-baaboo/python-auth-package).
+
 ```bash
-pip install baaboo-sso-auth
-# or: pip install "baaboo-sso-auth[fastapi]"
-# private VCS example:
-# pip install "git+https://github.com/your-org/baaboo-python-auth-package.git"
+# latest main (quick dev only)
+pip install "baaboo-sso-auth[fastapi] @ git+https://github.com/asheek21-baaboo/python-auth-package.git"
+
+# pinned to a release tag (use this everywhere else)
+pip install "baaboo-sso-auth[fastapi] @ git+https://github.com/asheek21-baaboo/python-auth-package.git@v0.1.0"
+
+# Flask instead of FastAPI: swap the extra
+pip install "baaboo-sso-auth[flask] @ git+https://github.com/asheek21-baaboo/python-auth-package.git@v0.1.0"
 ```
+
+In the consuming app's `requirements.txt`:
+
+```text
+baaboo-sso-auth[fastapi] @ git+https://github.com/asheek21-baaboo/python-auth-package.git@v0.1.0
+```
+
+Or in its `pyproject.toml`:
+
+```toml
+dependencies = [
+    "baaboo-sso-auth[fastapi] @ git+https://github.com/asheek21-baaboo/python-auth-package.git@v0.1.0",
+]
+```
+
+Rules:
+
+- **Always pin a tag** (`@v0.1.0`) in requirements files and deploys — never track `main`, or a push to the package repo silently changes what production installs.
+- Upgrading = bump the tag and reinstall (`pip install --force-reinstall` if the version number did not change).
+- If the repo is **private**, git auth is required at install time: SSH (`git+ssh://git@github.com/asheek21-baaboo/python-auth-package.git@v0.1.0`) for developer machines, or a fine-grained PAT with read-only contents scope for CI/servers (inject via env — never commit a token into a requirements file).
 
 ---
 
@@ -81,6 +109,32 @@ Register on the IdP:
 
 - `project_id` = `SSO_PROJECT_ID`
 - Redirect URI = `{APP_URL}/oauth/callback`
+
+#### `APP_URL` depends on the deployment topology
+
+If a separate browser frontend sits in front of this backend, `APP_URL` must be the URL **the browser uses to reach the OAuth callback** — matching the topology chosen in `INTEGRATE_NEXTJS_FRONTEND.md`:
+
+| Topology | `APP_URL` | `SSO_REDIRECT_AFTER_LOGIN` | Backend CORS |
+|----------|-----------|----------------------------|--------------|
+| Standalone tool (backend serves the UI) | the tool's own URL | relative path (e.g. `/dashboard`) | not needed |
+| Option A — frontend proxies to backend via rewrites | the **frontend** URL (e.g. `https://reports.baaboo.com`) | relative path — same origin | not needed |
+| Option B — separate same-site hosts | the **backend** URL (e.g. `https://reports-api.baaboo.com`) | **absolute** frontend URL (e.g. `https://reports.baaboo.com/dashboard`) | required (see below) |
+
+Option B additionally requires credentialed CORS on the backend, allowlisting the exact frontend origin (wildcard `*` does not work with credentials):
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://reports.baaboo.com"],  # dev: "http://localhost:3000"
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+The `token` cookie is `SameSite=Lax`, so frontend and backend must be **same-site** (same registrable domain; ports ignored). Unrelated domains are not supported — use Option A.
 
 ---
 
@@ -151,9 +205,11 @@ When `createUser` is false and the user is missing locally → redirect `user_no
 
 - [ ] Package installed; imports resolve
 - [ ] `.env` has `SSO_*` + `APP_URL`
+- [ ] `APP_URL` matches the deployment topology (standalone / Option A frontend URL / Option B backend URL — see Phase 2)
 - [ ] No duplicate `/login` / `/logout` / `/oauth/callback`
 - [ ] IdP redirect URI = `{APP_URL}/oauth/callback`
 - [ ] Login: IdP → callback → `token` cookie → `SSO_REDIRECT_AFTER_LOGIN`
+- [ ] (Option B only) credentialed CORS allowlists the exact frontend origin
 - [ ] Protected route returns user via `require_user` / `require_auth`
 - [ ] `GET /me` returns `{ "data": { "name", "role", "permissions" } }`
 - [ ] Logout clears cookie and calls IdP `/oauth/session/end` when enabled
@@ -178,16 +234,19 @@ When `createUser` is false and the user is missing locally → redirect `user_no
 | `403` on callback | Wrong secret, `aud`, or redirect URI mismatch |
 | `/me` missing `data` wrapper | Ensure `wrap_me_data=True` (default) |
 | Heartbeat 401 | Treat as logout; clear cookie |
+| Frontend fetches always 401 despite login | Topology mismatch: `APP_URL` points at the wrong host, or frontend/backend are cross-site — re-check the Phase 2 table |
+| CORS error from the frontend (Option B) | Allowlist the exact frontend origin with `allow_credentials=True`; wildcard `*` does not work with credentials |
 
 ---
 
 ### Output format (when you finish)
 
-1. **Discovery** — what auth existed and what you removed  
-2. **Files changed** — list with one-line reason  
-3. **`.env` keys added** — names only  
-4. **Commands run**  
-5. **Manual steps left** — IdP registry, deploy env, first login URL  
-6. **Verification** — checklist pass/fail  
+1. **Topology** — standalone, Option A, or Option B, with the URLs involved  
+2. **Discovery** — what auth existed and what you removed  
+3. **Files changed** — list with one-line reason  
+4. **`.env` keys added** — names only  
+5. **Commands run**  
+6. **Manual steps left** — IdP registry, deploy env, first login URL  
+7. **Verification** — checklist pass/fail  
 
 **Related:** Next.js frontend for this backend — `INTEGRATE_NEXTJS_FRONTEND.md` in this repo; Laravel sibling — `INTEGRATE_LARAVEL_SSO_PACKAGE.md` in `laravel-auth-package`.

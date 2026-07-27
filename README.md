@@ -12,9 +12,11 @@ This package does **not** implement the Identity Provider. It talks **to** the e
 
 ## Install
 
+Not on PyPI — install directly from GitHub (pin a tag in requirements files):
+
 ```bash
-pip install baaboo-sso-auth
-# or from this repo:
+pip install "baaboo-sso-auth[fastapi] @ git+https://github.com/asheek21-baaboo/python-auth-package.git@v0.1.0"
+# or for local development on this repo:
 pip install -e ".[fastapi,dev]"
 ```
 

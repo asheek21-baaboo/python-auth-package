@@ -53,8 +53,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/asheek21-baaboo/baaboo-python-auth-package"
-Documentation = "https://github.com/asheek21-baaboo/baaboo-python-auth-package#readme"
+Homepage = "https://github.com/asheek21-baaboo/python-auth-package"
+Documentation = "https://github.com/asheek21-baaboo/python-auth-package#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/baaboo_sso_auth"]
