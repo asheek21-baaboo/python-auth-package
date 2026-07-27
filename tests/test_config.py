@@ -93,3 +93,32 @@ def test_should_verify_ssl_explicit_override_wins() -> None:
         verify_ssl=True,
     )
     assert s.should_verify_ssl is True
+    assert s.httpx_verify is True
+
+
+def test_ca_bundle_enables_verification_in_local() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url="https://baaboo-sso.test",
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="local",
+        ca_bundle="C:/ProgramData/envkit/certs/cacert.pem",
+    )
+    assert s.should_verify_ssl is True
+    assert s.httpx_verify == "C:/ProgramData/envkit/certs/cacert.pem"
+
+
+def test_explicit_verify_ssl_false_beats_ca_bundle() -> None:
+    get_settings.cache_clear()
+    s = SsoSettings(  # type: ignore[call-arg]
+        sso_base_url="https://baaboo-sso.test",
+        project_id="my-app",
+        client_secret="sec",
+        app_url="https://app.test",
+        environment="local",
+        verify_ssl=False,
+        ca_bundle="C:/ProgramData/envkit/certs/cacert.pem",
+    )
+    assert s.httpx_verify is False

@@ -42,6 +42,7 @@ class SsoSettings(BaseSettings):
     redirect_to_idp_logout: bool = Field(default=True, validation_alias="SSO_REDIRECT_TO_IDP_LOGOUT")
     cookie_secure: bool | None = Field(default=None, validation_alias="SSO_COOKIE_SECURE")
     verify_ssl: bool | None = Field(default=None, validation_alias="SSO_VERIFY_SSL")
+    ca_bundle: str | None = Field(default=None, validation_alias="SSO_CA_BUNDLE")
     jwks_cache_ttl: int = Field(default=JWKS_CACHE_TTL_SECONDS, validation_alias="SSO_JWKS_CACHE_TTL")
     jwks_path: str = Field(default=JWKS_PATH, validation_alias="SSO_JWKS_PATH")
     heartbeat_interval_seconds: int = Field(
@@ -104,7 +105,25 @@ class SsoSettings(BaseSettings):
         """
         if self.verify_ssl is not None:
             return self.verify_ssl
+        if self.ca_bundle:
+            return True
         return self.environment.lower() != "local"
+
+    @property
+    def httpx_verify(self) -> bool | str:
+        """
+        Value for ``httpx.Client(verify=...)``.
+
+        Preferred local-dev setup: point ``SSO_CA_BUNDLE`` at a combined CA
+        bundle that includes the local root CA (e.g. EnvKit ships one at
+        ``C:/ProgramData/envkit/certs/cacert.pem``) so verification stays on.
+        Falls back to plain ``should_verify_ssl`` when no bundle is configured.
+        """
+        if not self.should_verify_ssl:
+            return False
+        if self.ca_bundle:
+            return self.ca_bundle
+        return True
 
 
 _settings_override: SsoSettings | None = None

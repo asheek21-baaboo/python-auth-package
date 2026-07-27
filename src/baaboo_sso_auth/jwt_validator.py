@@ -129,18 +129,21 @@ class JwtValidator:
         """
         PyJWKClient fetches JWKS via ``urllib`` internally, independent of
         ``_http_client`` — it needs its own SSL context to honor the same
-        ``should_verify_ssl`` setting (e.g. for local self-signed dev certs).
+        verification settings (custom CA bundle or disabled verification).
         """
-        if self._settings.should_verify_ssl:
+        verify = self._settings.httpx_verify
+        if verify is True:
             return None
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        return context
+        if verify is False:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            return context
+        return ssl.create_default_context(cafile=verify)
 
     def _fetch_jwks(self) -> dict[str, Any]:
         client = self._http_client or httpx.Client(
-            timeout=5.0, verify=self._settings.should_verify_ssl
+            timeout=5.0, verify=self._settings.httpx_verify
         )
         owns_client = self._http_client is None
         try:

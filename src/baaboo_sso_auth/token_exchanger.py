@@ -66,7 +66,7 @@ class TokenExchanger:
         }
 
         client = self._http_client or httpx.Client(
-            timeout=10.0, verify=self._settings.should_verify_ssl
+            timeout=10.0, verify=self._settings.httpx_verify
         )
         owns_client = self._http_client is None
         try:
