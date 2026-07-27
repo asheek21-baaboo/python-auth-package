@@ -2,13 +2,13 @@
 
 Wire a **Next.js frontend** to a **FastAPI (or Flask) backend that already uses `baaboo-sso-auth`**.
 
-> **Scope:** The frontend does **no auth work**. Login, OAuth callback, token exchange, JWT validation, the httpOnly `token` cookie, logout, and `/me` are all owned by the backend package. The frontend only: (1) calls the backend with credentials, (2) redirects the browser to the backend `/login` on 401, (3) reads `GET /me` to render name/role/permissions.
+> **Scope:** The frontend does **no auth work**. Login, OAuth callback, token exchange, JWT validation, the httpOnly `token` cookie, logout, and `/me` are all owned by the backend package. The frontend only: (1) calls the backend with credentials, (2) sends the browser to its own `/signin` page on 401 — a page with a single **"Login via SSO"** button that navigates to the backend `/login`, (3) reads `GET /me` to render name/role/permissions.
 
 ## Copy-paste into your agent
 
 Open the **Next.js app** in Cursor, then paste:
 
-> Follow `docs/prompts/INTEGRATE_NEXTJS_FRONTEND.md` (from `baaboo-python-auth-package`) end to end. Before changing files, ask me to choose **Option A (Next.js proxy/rewrite)** or **Option B (separate same-site frontend and backend hosts)** and ask for the frontend/backend dev and production URLs. Wait for my answer, then implement only the selected topology. Add the credentialed fetch wrapper with 401 → `/login` redirect, add the `/me` auth hook, and verify the full login round-trip against the backend.
+> Follow `docs/prompts/INTEGRATE_NEXTJS_FRONTEND.md` (from `baaboo-python-auth-package`) end to end. Before changing files, ask me to choose **Option A (Next.js proxy/rewrite)** or **Option B (separate same-site frontend and backend hosts)** and ask for the frontend/backend dev and production URLs. Wait for my answer, then implement only the selected topology. Add the credentialed fetch wrapper with 401 → `/signin` redirect, build the `/signin` page with a "Login via SSO" button, add the `/me` auth hook, and verify the full login and logout round-trips against the backend.
 
 ---
 
@@ -42,7 +42,8 @@ The JWT lives **only** in the httpOnly `token` cookie. The frontend never sees, 
 | No frontend login UI | No password forms, no NextAuth/Auth.js, no OAuth client in Next.js. The IdP owns login UI. |
 | Login is a navigation | `window.location.href = LOGIN_URL` — never `fetch('/login')` (redirects to the IdP cannot be followed by XHR). |
 | Credentials on every call | All backend fetches use `credentials: 'include'`. |
-| 401 means logged out | Any 401 from the backend → redirect the browser to `/login`. |
+| 401 means logged out | Any 401 from the backend → send the browser to the frontend `/signin` page. **Never** auto-navigate to `/login` on 401 — that re-enters the OAuth flow immediately and makes logout loop straight back in. |
+| Sign-in page path | The frontend page lives at `/signin` (or any path other than `/login`) — `/login` belongs to the backend and, under Option A, is proxied to it. Only a user click on "Login via SSO" navigates to `/login`. |
 | No secrets in frontend | `SSO_CLIENT_SECRET` and other `SSO_*` server keys must never appear in the Next.js repo or `NEXT_PUBLIC_*` env. |
 
 ---
@@ -122,7 +123,7 @@ IdP registry: redirect URI = `https://reports.baaboo.com/oauth/callback` (dev: `
 
 Login round-trip as the browser sees it (one origin throughout):
 
-1. User opens `https://reports.baaboo.com/dashboard` → `/me` returns 401 → browser navigates to `https://reports.baaboo.com/login`
+1. User opens `https://reports.baaboo.com/dashboard` → `/me` returns 401 → browser lands on `https://reports.baaboo.com/signin` and the user clicks **Login via SSO** → `https://reports.baaboo.com/login`
 2. Next.js proxies `/login` to FastAPI, which responds with a redirect to `https://sso.baaboo.com/oauth/authorize?...`
 3. User logs in at the IdP → IdP redirects to `https://reports.baaboo.com/oauth/callback?code=...`
 4. Next.js proxies the callback to FastAPI → FastAPI exchanges the code, sets the `token` cookie (which lands on `reports.baaboo.com`), redirects to `/dashboard`
@@ -175,7 +176,7 @@ IdP registry: redirect URI = `https://reports-api.baaboo.com/oauth/callback` (de
 
 Login round-trip as the browser sees it (two hosts, one site):
 
-1. User opens `https://reports.baaboo.com/dashboard` → fetch to `https://reports-api.baaboo.com/me` returns 401 → browser navigates to `https://reports-api.baaboo.com/login`
+1. User opens `https://reports.baaboo.com/dashboard` → fetch to `https://reports-api.baaboo.com/me` returns 401 → browser lands on `https://reports.baaboo.com/signin` and the user clicks **Login via SSO** → `https://reports-api.baaboo.com/login`
 2. FastAPI redirects to `https://sso.baaboo.com/oauth/authorize?...`
 3. User logs in at the IdP → IdP redirects to `https://reports-api.baaboo.com/oauth/callback?code=...`
 4. FastAPI exchanges the code, sets the `token` cookie (which lands on `reports-api.baaboo.com`), redirects to `https://reports.baaboo.com/dashboard`
@@ -199,21 +200,23 @@ Login round-trip as the browser sees it (two hosts, one site):
 
 ### Phase 3 — Fetch wrapper
 
-All backend calls go through one wrapper: send credentials, treat 401 as logged out.
+All backend calls go through one wrapper: send credentials, treat 401 as logged out. A 401 sends the user to the frontend **`/signin` page** — never straight into the OAuth flow, or logging out becomes impossible (the next `/me` check would instantly bounce the user through the IdP and back in).
 
 ```ts
 // lib/api.ts
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ""; // "" when using rewrites (Option A)
 
-export const LOGIN_URL = `${API_BASE}/login`;
+export const LOGIN_URL = `${API_BASE}/login`; // backend route — only navigated to from the sign-in button
+export const SIGNIN_PAGE = "/signin";         // frontend page — where 401s land
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     credentials: "include",
   });
-  if (res.status === 401 && typeof window !== "undefined") {
-    window.location.href = LOGIN_URL; // full navigation → IdP round-trip
+  if (res.status === 401 && typeof window !== "undefined"
+      && window.location.pathname !== SIGNIN_PAGE) {
+    window.location.href = SIGNIN_PAGE;
   }
   return res;
 }
@@ -221,7 +224,39 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 
 ---
 
-### Phase 4 — Auth hook / user context
+### Phase 4 — Sign-in page ("Login via SSO")
+
+A minimal page at `/signin`. It is the only place that starts the OAuth flow, and only on a user click:
+
+```tsx
+// app/signin/page.tsx
+"use client";
+import { LOGIN_URL } from "@/lib/api";
+
+export default function SignInPage() {
+  return (
+    <main style={{ display: "grid", placeItems: "center", minHeight: "100vh" }}>
+      <div style={{ textAlign: "center" }}>
+        <h1>Welcome</h1>
+        <p>Sign in with your company account to continue.</p>
+        <button onClick={() => { window.location.href = LOGIN_URL; }}>
+          Login via SSO
+        </button>
+      </div>
+    </main>
+  );
+}
+```
+
+Rules for this page:
+
+- The button does a **full navigation** to the backend `/login` (`window.location.href`), never a `fetch`.
+- The page itself must not call `apiFetch`/`useUser` and must not auto-redirect to `/login` on mount — it has to be a stable resting place for logged-out users.
+- Style it to match the app; the code above is deliberately minimal.
+
+---
+
+### Phase 5 — Auth hook / user context
 
 ```tsx
 // lib/use-user.ts
@@ -250,24 +285,74 @@ export function useUser() {
 }
 ```
 
-Gate pages on `user` being present; while `loading`, render nothing or a spinner. On 401 the wrapper has already redirected to `/login`.
+Gate pages on `user` being present; while `loading`, render nothing or a spinner. On 401 the wrapper has already redirected to `/signin`.
 
 Permission checks in the UI are cosmetic only (`user.permissions.includes("reports.view")` to hide buttons); the backend enforces the real rules via `require_user`.
 
 ---
 
-### Phase 5 — Logout
+### Phase 6 — Logout (must destroy the `token` cookie)
+
+The backend `POST /logout` ends the IdP session (server-to-server) and answers with a `Set-Cookie` that clears the `token` cookie. Afterwards the frontend must land on `/signin` — **not** on a protected page, whose `/me` check would 401 and, if it pointed at `/login`, restart the OAuth flow and log the user straight back in.
+
+The cookie is **httpOnly**: frontend JavaScript can never read or delete it (`document.cookie` won't see it). It is destroyed only by a `Set-Cookie` from the domain that owns it — so the logout call **must** reach the backend and its response must be applied by the browser, or the token silently survives and the user is still logged in.
+
+#### Option A — belt-and-suspenders: Next.js destroys the cookie itself
+
+Under Option A the cookie lives on the **Next.js domain**, so a Next.js Route Handler can both call the backend logout and unconditionally delete the cookie — the token is destroyed even if the backend call fails:
 
 ```ts
-export async function logout() {
-  await apiFetch("/logout", { method: "POST" });
-  window.location.href = "/"; // backend cleared the cookie and ended the IdP session
+// app/api/signout/route.ts
+import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
+
+export async function POST() {
+  try {
+    // Ends the IdP session server-side; its Set-Cookie is irrelevant here
+    await fetch(`${process.env.BACKEND_URL}/logout`, {
+      method: "POST",
+      headers: { cookie: (await cookies()).toString() },
+      redirect: "manual",
+    });
+  } catch {
+    // best-effort — local destroy below must still happen
+  }
+  const res = NextResponse.json({ ok: true });
+  res.cookies.delete("token"); // guaranteed local destroy
+  return res;
 }
 ```
 
+```ts
+// lib/api.ts
+export async function logout() {
+  await fetch("/api/signout", { method: "POST" });
+  window.location.href = SIGNIN_PAGE; // stable logged-out destination — no loop
+}
+```
+
+#### Option B — only the backend can clear the cookie
+
+The cookie belongs to the backend host, so the Next.js server never sees it and JS cannot touch it. The clear **only** works if the fetch carries credentials (otherwise the browser ignores the response's `Set-Cookie`):
+
+```ts
+export async function logout() {
+  await fetch(`${API_BASE}/logout`, { method: "POST", credentials: "include" });
+  window.location.href = SIGNIN_PAGE;
+}
+```
+
+Verify in DevTools (Application → Cookies) that `token` is gone after logout. Note this uses plain `fetch`, not `apiFetch` — the logout response needs no 401 handling.
+
+#### Known limitation — the IdP's own browser session
+
+`/logout` ends the IdP session with a **server-to-server** call. That cannot clear the IdP's own browser cookie on the SSO domain. If the IdP's `/oauth/authorize` still honors that cookie, clicking "Login via SSO" right after logout signs the user back in **without a password prompt**. That is standard SSO behavior, not a leftover app token; fixing it requires an IdP-side feature — front-channel logout and/or `prompt=login`, specified in `IDP_SESSION_LIFECYCLE_PROMPT.md` in this repo.
+
+**Separate red flag:** if a **fresh incognito window** can click "Login via SSO" and get in without ever seeing the IdP login form, that is not a cookie issue — the IdP's authorize endpoint is issuing codes without authentication. Stop and fix the IdP (see the same prompt doc) before shipping anything.
+
 ---
 
-### Phase 6 — Optional SSR protection (Option A only)
+### Phase 7 — Optional SSR protection (Option A only)
 
 With rewrites, the `token` cookie lives on the Next.js domain, so `middleware.ts` can gate routes before render:
 
@@ -277,17 +362,17 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(req: NextRequest) {
   if (!req.cookies.has("token")) {
-    return NextResponse.redirect(new URL("/login", req.url));
+    return NextResponse.redirect(new URL("/signin", req.url)); // the sign-in page, not /login
   }
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!login|oauth|logout|me|api|_next|favicon.ico).*)"],
+  matcher: ["/((?!signin|login|oauth|logout|me|api|_next|favicon.ico).*)"],
 };
 ```
 
-This only checks **presence** — do not decode or verify the JWT in Next.js. Validation stays on the backend (an expired cookie will simply 401 on the first API call and bounce through `/login`).
+This only checks **presence** — do not decode or verify the JWT in Next.js. Validation stays on the backend (an expired cookie will simply 401 on the first API call and land the user on `/signin`).
 
 Server components can forward the cookie when fetching:
 
@@ -304,15 +389,17 @@ Not applicable to Option B: the cookie belongs to the backend host, so the Next.
 
 ---
 
-### Phase 7 — Verification checklist
+### Phase 8 — Verification checklist
 
 - [ ] No token in `localStorage`, JS-readable cookies, or `Authorization` headers
 - [ ] No `SSO_*` secrets anywhere in the frontend repo
-- [ ] Visiting a protected page while logged out ends up at the IdP login screen
+- [ ] Visiting a protected page while logged out lands on `/signin` (not the IdP)
+- [ ] Clicking "Login via SSO" navigates to the IdP login screen
 - [ ] After IdP login, browser lands back on the frontend, logged in
 - [ ] `GET /me` returns `{ "data": { "name", "role", "permissions" } }` and the UI shows them
 - [ ] Authenticated API calls to the backend succeed with no manual headers
-- [ ] Logout clears the session; next protected action redirects to `/login`
+- [ ] Logout lands on `/signin` and **stays there** — no redirect loop
+- [ ] After logout, the `token` cookie is gone (DevTools → Application → Cookies)
 - [ ] (Option A) IdP redirect URI = `{frontend URL}/oauth/callback`; (Option B) = `{backend URL}/oauth/callback`
 
 ---
@@ -334,6 +421,10 @@ Not applicable to Option B: the cookie belongs to the backend host, so the Next.
 | `/me` always 401 even after login | Missing `credentials: 'include'`, or frontend/backend are cross-site (check topology) |
 | CORS error on fetch (Option B) | Backend CORS must allowlist the exact frontend origin and set `allow_credentials=True`; wildcard `*` origins do not work with credentials |
 | Login "does nothing" | `/login` was called with `fetch` instead of `window.location.href` |
+| Logout logs the user straight back in / loops | A 401 handler (or post-logout redirect) navigates to `/login` instead of `/signin`; with an active IdP session the OAuth flow completes silently. Route all 401s and the post-logout redirect to `/signin`. |
+| Still logged in after logout (`token` cookie survives) | Logout call never cleared the cookie: missing `credentials: 'include'` (Option B), or the call failed. Option A: use the `/api/signout` route handler, which deletes the cookie unconditionally. Verify in DevTools that `token` is gone. |
+| "Login via SSO" signs in without a password right after logout | The IdP's own browser session cookie is still alive — server-to-server `session/end` cannot clear it. Not an app-token leak; needs IdP front-channel logout or `prompt=login` (see `IDP_SESSION_LIFECYCLE_PROMPT.md`). |
+| Incognito window logs in without any IdP login form | IdP `/oauth/authorize` issues codes without authentication — a critical IdP bug, not a frontend/backend issue. Fix per `IDP_SESSION_LIFECYCLE_PROMPT.md`. |
 | Redirect loop through `/login` | Cookie not being set: redirect URI mismatch on the IdP, or callback served from a different host than the one the browser uses |
 | Cookie missing in dev | Use `http://localhost` for both apps (not a mix of `localhost` and `127.0.0.1` — those are different sites) |
 | Works in dev, breaks deployed | Frontend and backend are not same-site in prod; switch to Option A rewrites |
@@ -349,4 +440,4 @@ Not applicable to Option B: the cookie belongs to the backend host, so the Next.
 5. **Manual steps left** — IdP redirect URI, deploy env
 6. **Verification** — checklist pass/fail
 
-**Related:** backend side — `INTEGRATE_PYTHON_SSO_PACKAGE.md` in this repo; Laravel sibling — `INTEGRATE_LARAVEL_SSO_PACKAGE.md` in `laravel-auth-package`.
+**Related:** backend side — `INTEGRATE_PYTHON_SSO_PACKAGE.md` in this repo; IdP-side requirements — `IDP_SESSION_LIFECYCLE_PROMPT.md` in this repo; Laravel sibling — `INTEGRATE_LARAVEL_SSO_PACKAGE.md` in `laravel-auth-package`.

@@ -229,7 +229,21 @@ When `createUser` is false and the user is missing locally → redirect `user_no
 
 ---
 
-### Phase 6 — Verification checklist
+### Phase 6 — Session lifecycle (heartbeat & logout)
+
+Nothing to wire — the package does this automatically — but confirm the behavior and env:
+
+**Heartbeat.** On authenticated requests, `require_user` / `require_auth` calls IdP `POST /oauth/heartbeat` server-to-server, throttled to once per `SSO_HEARTBEAT_INTERVAL_SECONDS` (default 60) per token. A heartbeat **401 means the session was ended or timed out at the IdP** — the request fails 401 and the user must sign in again. Set the interval `<= 0` only to disable heartbeats entirely (not recommended).
+
+Do not confuse this with JWKS validation: JWT verification (signature/`exp`/`iss`/`aud`) is **offline** — the hourly `SSO_JWKS_CACHE_TTL` refresh only fetches rotated signing keys and never checks session state. A revoked or ended session leaves the JWT technically valid until its 10-hour `exp`; the heartbeat is the only mechanism that cuts such a user off early (within one interval instead of up to 10 hours).
+
+**Logout.** `POST /logout` always clears the local `token` cookie, and (with `SSO_REDIRECT_TO_IDP_LOGOUT=true`, the default) also calls IdP `POST /oauth/session/end` server-to-server, best-effort.
+
+**Known limitation:** the session-end call is back-channel only — it cannot clear the IdP's own cookies in the user's browser, so an IdP with a live browser session may silently re-authorize on the next login click. True end-to-end logout requires the IdP's front-channel logout route; the IdP-side requirements (heartbeat semantics, session end, front-channel logout, authorize auth check) are specified in `IDP_SESSION_LIFECYCLE_PROMPT.md` in this repo.
+
+---
+
+### Phase 7 — Verification checklist
 
 - [ ] Package installed; imports resolve
 - [ ] `.env` has `SSO_*` + `APP_URL`
@@ -241,6 +255,7 @@ When `createUser` is false and the user is missing locally → redirect `user_no
 - [ ] Protected route returns user via `require_user` / `require_auth`
 - [ ] `GET /me` returns `{ "data": { "name", "role", "permissions" } }`
 - [ ] Logout clears cookie and calls IdP `/oauth/session/end` when enabled
+- [ ] Heartbeat: a session ended at the IdP produces 401 on the next request (within the heartbeat interval)
 - [ ] `SSO_CLIENT_SECRET` never in frontend
 
 ---
@@ -277,4 +292,4 @@ When `createUser` is false and the user is missing locally → redirect `user_no
 6. **Manual steps left** — IdP registry, deploy env, first login URL  
 7. **Verification** — checklist pass/fail  
 
-**Related:** Next.js frontend for this backend — `INTEGRATE_NEXTJS_FRONTEND.md` in this repo; Laravel sibling — `INTEGRATE_LARAVEL_SSO_PACKAGE.md` in `laravel-auth-package`.
+**Related:** Next.js frontend for this backend — `INTEGRATE_NEXTJS_FRONTEND.md` in this repo; IdP-side requirements — `IDP_SESSION_LIFECYCLE_PROMPT.md` in this repo; Laravel sibling — `INTEGRATE_LARAVEL_SSO_PACKAGE.md` in `laravel-auth-package`.
